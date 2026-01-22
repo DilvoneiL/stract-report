@@ -76,12 +76,12 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
             p["page"] = page
             data = api_get(path, p)
 
-        # ---------- Caso: lista simples ----------
+        #lista simples
         if isinstance(data, list):
             out.extend(data)
             break
 
-        # ---------- Caso: dict ----------
+        #dict
         if isinstance(data, dict):
             items = None
             for k in ("insights", "accounts", "fields", "platforms", "results", "data", "items"):
@@ -106,12 +106,12 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
                     continue
                 break  
 
-            # 2) link next
+            #link next
             if isinstance(data.get("next"), str) and data["next"]:
                 next_url = data["next"]
                 continue
 
-            # 3) fallbacks
+            #fallbacks
             if data.get("has_next") is True or data.get("next_page"):
                 page += 1
                 continue
@@ -126,7 +126,7 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
 
 
 
-# ========= Domain helpers =========
+#Domain helpers
 
 def get_platforms() -> List[Dict[str, Any]]:
     data = api_get("/platforms")
@@ -221,7 +221,7 @@ def parse_account_name(account: Dict[str, Any]) -> str:
 
 def get_insights(platform: str, account: Dict[str, Any], fields: List[str]) -> List[Dict[str, Any]]:
     account_id = account.get("id")
-    # PRIORIDADE: token da conta; FALLBACK: AUTH_TOKEN (algumas plataformas podem aceitar)
+    # PRIORIDADE: token da conta; FALLBACK: AUTH_TOKEN
     account_token = account.get("token") or AUTH_TOKEN
 
     if not account_id:
@@ -296,7 +296,7 @@ def build_csv_response(rows: List[Dict[str, Any]], headers: List[str], filename:
         headers={"Content-Disposition": f'inline; filename="{filename}"'}
     )
 
-# ========= Report builders =========
+#Report builders
 
 def platform_ads_table(platform: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     accounts = get_accounts(platform)
@@ -405,7 +405,7 @@ def general_summary_table() -> Tuple[List[Dict[str, Any]], List[str]]:
     out = list(agg.values())
     return out, headers
 
-# ========= Flask routes =========
+#Flask routes
 
 
 
