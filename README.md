@@ -86,17 +86,7 @@ curl -s http://localhost:5000/meta_ads/resumo | head
 
 Ao acessar os endpoints, você deve ver respostas 200 no console, por exemplo:
 
-```
-127.0.0.1 - - [23/Jan/2026 13:10:10] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:10:20] "GET /geral HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:11:35] "GET /geral/resumo HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:12:11] "GET /meta_ads HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:12:26] "GET /ga4 HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:12:38] "GET /tiktok_insights HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:12:53] "GET /meta_ads/resumo HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:13:07] "GET /tiktok_insights/resumo HTTP/1.1" 200 -
-127.0.0.1 - - [23/Jan/2026 13:13:34] "GET /ga4/resumo HTTP/1.1" 200 -
-```
+<img width="899" height="338" alt="Image" src="https://github.com/user-attachments/assets/8490e882-eff5-4f5e-97de-cec7b6373939" />
 
 ## Notas de implementação
 
