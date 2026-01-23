@@ -1,61 +1,73 @@
-from flask import Flask, Response
+from __future__ import annotations
+
+from flask import Response, current_app
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 import csv
 import io
 from typing import Dict, List, Any, Tuple
 import os
 import time
 
-API_BASE = os.getenv("API_BASE", "https://sidebar.stract.to/api")
-AUTH_TOKEN = os.getenv("AUTH_TOKEN") 
+# ----------------- Config (via terminal) -----------------
+API_BASE = os.getenv("API_BASE", "https://sidebar.stract.to/api").rstrip("/")
+AUTH_TOKEN = os.getenv("AUTH_TOKEN")
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "12"))
+RETRY_ATTEMPTS = int(os.getenv("RETRY_ATTEMPTS", "2"))
 
 if not AUTH_TOKEN:
     raise RuntimeError(
         "AUTH_TOKEN não definido. Exporte no terminal:\n"
         '  export AUTH_TOKEN="..."\n'
-    ) 
-HTTP_TIMEOUT = 12
-RETRY_ATTEMPTS = 2
+    )
 
+#HTTP Session com Retry/Timeout
+def _build_session(timeout: int, retries: int) -> requests.Session:
+    s = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=0.5,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
 
-app = Flask(__name__)
-print("URL MAP:", app.url_map)
+    orig = s.request
+    def _with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout)
+        return orig(method, url, **kwargs)
+    s.request = _with_timeout 
+    return s
 
+_SESSION = _build_session(HTTP_TIMEOUT, RETRY_ATTEMPTS)
+
+def _auth_headers() -> Dict[str, str]:
+    return {"Authorization": f"Bearer {AUTH_TOKEN}"} if AUTH_TOKEN else {}
+
+#HTTP helpers
 def api_get(path: str, params: Dict[str, Any] | None = None) -> Any:
-    """GET na API com Authorization Bearer + retry leve."""
+    """GET na API com Authorization Bearer (logs sem vazar token)."""
     url = f"{API_BASE}{path}"
-    headers = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-    last_exc = None
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            r = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
-            r.raise_for_status()
-            return r.json()
-        except Exception as exc:
-            last_exc = exc
-          
-            time.sleep(0.4 * (attempt + 1))
-    
-    raise last_exc
+    safe_params = dict(params or {})
+    safe_params.pop("token", None)
+    current_app.logger.info("GET %s params=%s", url, safe_params)
 
-def ensure_cpc(row: Dict[str, Any]) -> None:
+    r = _SESSION.get(url, headers=_auth_headers(), params=params or {})
+    current_app.logger.info("-> %s %s", r.status_code, r.reason)
+    r.raise_for_status()
+    return r.json()
 
-    keys_lower = {k.lower(): k for k in row.keys()}
-    has_cpc = any(k.lower() == "cost per click" for k in row.keys())
-    spend_k = keys_lower.get("spend")
-    clicks_k = keys_lower.get("clicks")
-
-    if not has_cpc and spend_k and clicks_k:
-        clicks = to_float(row.get(clicks_k))
-        spend = to_float(row.get(spend_k))
-        row["Cost per Click"] = (spend / clicks) if clicks else ""
-
-
+#Paginação
 def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
     out: List[Any] = []
     page = 1
     next_url = None
-    max_pages = 50  
+    max_pages = 50
 
     while True:
         if page > max_pages:
@@ -66,8 +78,7 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
                 rel = next_url.replace(API_BASE, "")
                 data = api_get(rel, {})
             else:
-                headers = {"Authorization": f"Bearer {AUTH_TOKEN}"}
-                r = requests.get(next_url, headers=headers, timeout=HTTP_TIMEOUT)
+                r = _SESSION.get(next_url, headers=_auth_headers(), timeout=HTTP_TIMEOUT)
                 r.raise_for_status()
                 data = r.json()
             next_url = None
@@ -76,12 +87,11 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
             p["page"] = page
             data = api_get(path, p)
 
-        #lista simples
         if isinstance(data, list):
             out.extend(data)
             break
 
-        #dict
+        # dict
         if isinstance(data, dict):
             items = None
             for k in ("insights", "accounts", "fields", "platforms", "results", "data", "items"):
@@ -96,7 +106,6 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
 
             out.extend(items)
 
-           
             pagination = data.get("pagination")
             if isinstance(pagination, dict):
                 current = pagination.get("current")
@@ -104,30 +113,23 @@ def fetch_all_pages(path: str, params: Dict[str, Any]) -> List[Any]:
                 if isinstance(current, int) and isinstance(total, int) and current < total:
                     page += 1
                     continue
-                break  
+                break
 
-            #link next
             if isinstance(data.get("next"), str) and data["next"]:
                 next_url = data["next"]
                 continue
 
-            #fallbacks
             if data.get("has_next") is True or data.get("next_page"):
                 page += 1
                 continue
 
-           
             break
 
-        
         break
 
     return out
 
-
-
-#Domain helpers
-
+#helpers
 def get_platforms() -> List[Dict[str, Any]]:
     data = api_get("/platforms")
 
@@ -145,46 +147,44 @@ def get_platforms() -> List[Dict[str, Any]]:
         if data and isinstance(data[0], str):
             return [{"name": x, "label": x} for x in data]
         if data and isinstance(data[0], dict):
-            return [{"name": d.get("value") or d.get("name") or d.get("platform"),
-                     "label": d.get("text") or d.get("label") or d.get("name")}
-                    for d in data
-                    if (d.get("value") or d.get("name") or d.get("platform"))]
+            return [
+                {
+                    "name": d.get("value") or d.get("name") or d.get("platform"),
+                    "label": d.get("text") or d.get("label") or d.get("name"),
+                }
+                for d in data
+                if (d.get("value") or d.get("name") or d.get("platform"))
+            ]
     return []
 
 def get_accounts(platform: str) -> List[Dict[str, Any]]:
     data = api_get("/accounts", {"platform": platform})
 
-    
     if isinstance(data, dict) and isinstance(data.get("accounts"), list):
         out = []
         for a in data["accounts"]:
             if isinstance(a, dict):
                 value = a.get("value") or a.get("id")
                 text = a.get("text") or a.get("name") or value
-                token = a.get("token") or a.get("access_token")  
+                token = a.get("token") or a.get("access_token")
                 if value:
-                    out.append({
-                        "id": value,
-                        "name": text,
-                        "token": token  
-                    })
+                    out.append({"id": value, "name": text, "token": token})
         return out
 
-    # fallback
     if isinstance(data, list):
         out = []
         for a in data:
             if isinstance(a, dict):
-                out.append({
-                    "id": a.get("value") or a.get("id"),
-                    "name": a.get("text") or a.get("name") or a.get("value") or "",
-                    "token": a.get("token") or a.get("access_token")
-                })
+                out.append(
+                    {
+                        "id": a.get("value") or a.get("id"),
+                        "name": a.get("text") or a.get("name") or a.get("value") or "",
+                        "token": a.get("token") or a.get("access_token"),
+                    }
+                )
         return out
 
     return []
-
-
 
 def get_fields(platform: str) -> List[str]:
     data = fetch_all_pages("/fields", {"platform": platform})
@@ -197,7 +197,6 @@ def get_fields(platform: str) -> List[str]:
         elif isinstance(f, str):
             fields.append(f)
 
-    # dedupe mantendo ordem
     seen = set()
     uniq = []
     for x in fields:
@@ -206,40 +205,10 @@ def get_fields(platform: str) -> List[str]:
             seen.add(x)
     return uniq
 
-def parse_account_id(account: Dict[str, Any]) -> Any:
-    return (
-        account.get("value") or   
-        account.get("id") or
-        account.get("account") or
-        account.get("account_id") or
-        account.get("uuid")
-    )
-
 def parse_account_name(account: Dict[str, Any]) -> str:
     return account.get("name") or str(account.get("id") or "")
 
-
-def get_insights(platform: str, account: Dict[str, Any], fields: List[str]) -> List[Dict[str, Any]]:
-    account_id = account.get("id")
-    # PRIORIDADE: token da conta; FALLBACK: AUTH_TOKEN
-    account_token = account.get("token") or AUTH_TOKEN
-
-    if not account_id:
-        return []
-
-    params = {
-        "platform": platform,
-        "account": account_id,
-        "token": account_token,
-        "fields": ",".join(fields),
-    }
-
-    data = fetch_all_pages("/insights", params)
-    return [row for row in data if isinstance(row, dict)]
-
-
 def is_number(v: Any) -> bool:
-    
     if v is None:
         return False
     if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -251,7 +220,7 @@ def is_number(v: Any) -> bool:
         try:
             float(s)
             return True
-        except:
+        except Exception:
             return False
     return False
 
@@ -266,7 +235,7 @@ def to_float(v: Any) -> float:
             return 0.0
         try:
             return float(s)
-        except:
+        except Exception:
             return 0.0
     return 0.0
 
@@ -276,27 +245,38 @@ def normalize_row_keys(row: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(k, str):
             continue
         lk = k.lower().strip()
-        # remove apenas ids claros
         if lk == "id" or lk.endswith("_id") or lk.endswith(" id"):
             continue
         out[k] = v
     return out
 
+def ensure_cpc(row: Dict[str, Any]) -> None:
+    keys_lower = {k.lower(): k for k in row.keys()}
+    has_cpc = any(k.lower() == "cost per click" for k in row.keys())
+    spend_k = keys_lower.get("spend")
+    clicks_k = keys_lower.get("clicks")
 
-def build_csv_response(rows: List[Dict[str, Any]], headers: List[str], filename: str) -> Response:
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
-    writer.writeheader()
-    for r in rows:
-        writer.writerow({h: r.get(h, "") for h in headers})
-    csv_text = buf.getvalue()
-    return Response(
-        csv_text,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'}
-    )
+    if not has_cpc and spend_k and clicks_k:
+        clicks = to_float(row.get(clicks_k))
+        spend = to_float(row.get(spend_k))
+        row["Cost per Click"] = (spend / clicks) if clicks else ""
 
 #Report builders
+def get_insights(platform: str, account: Dict[str, Any], fields: List[str]) -> List[Dict[str, Any]]:
+    account_id = account.get("id")
+    account_token = account.get("token") or AUTH_TOKEN
+    if not account_id:
+        return []
+
+    params = {
+        "platform": platform,
+        "account": account_id,
+        "token": account_token,
+        "fields": ",".join(fields),
+    }
+
+    data = fetch_all_pages("/insights", params)
+    return [row for row in data if isinstance(row, dict)]
 
 def platform_ads_table(platform: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     accounts = get_accounts(platform)
@@ -313,12 +293,8 @@ def platform_ads_table(platform: str) -> Tuple[List[Dict[str, Any]], List[str]]:
             item = normalize_row_keys(item)
             item["Account Name"] = acc_name
             item["Platform"] = platform
-
-           
             ensure_cpc(item)
-
             rows.append(item)
-
             for k in item.keys():
                 if k not in all_cols:
                     all_cols.append(k)
@@ -327,13 +303,10 @@ def platform_ads_table(platform: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     headers = preferred + [c for c in all_cols if c not in preferred]
     return rows, headers
 
-
 def platform_summary_table(platform: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     rows, headers = platform_ads_table(platform)
 
-   
     agg: Dict[str, Dict[str, Any]] = {}
-
     for r in rows:
         acc = r.get("Account Name", "")
         if acc not in agg:
@@ -347,9 +320,6 @@ def platform_summary_table(platform: str) -> Tuple[List[Dict[str, Any]], List[st
             v = r.get(h)
             if is_number(v):
                 agg[acc][h] = to_float(agg[acc].get(h)) + to_float(v)
-            else:
-               
-                pass
 
     out = list(agg.values())
     return out, headers
@@ -361,31 +331,21 @@ def general_ads_table() -> Tuple[List[Dict[str, Any]], List[str]]:
 
     for platform in platforms:
         rows, _headers = platform_ads_table(platform)
-
         for r in rows:
-            
             ensure_cpc(r)
-
-            
             all_rows.append(r)
-
-            
             for k in r.keys():
                 if k not in all_cols:
                     all_cols.append(k)
 
-    # prioriza colunas 
     preferred = ["Platform", "Account Name"]
     headers = preferred + [c for c in all_cols if c not in preferred]
     return all_rows, headers
 
-
 def general_summary_table() -> Tuple[List[Dict[str, Any]], List[str]]:
     rows, headers = general_ads_table()
 
-    
     agg: Dict[str, Dict[str, Any]] = {}
-
     for r in rows:
         plat = r.get("Platform", "")
         if plat not in agg:
@@ -398,45 +358,20 @@ def general_summary_table() -> Tuple[List[Dict[str, Any]], List[str]]:
             v = r.get(h)
             if is_number(v):
                 agg[plat][h] = to_float(agg[plat].get(h)) + to_float(v)
-            else:
-               
-                pass
 
     out = list(agg.values())
     return out, headers
 
-#Flask routes
-
-
-
-@app.get("/")
-def root():
-
-    name = "dilvonei"
-    email = "dilvoneialveslacerdajunior@gmail.com"
-    linkedin = "https://www.linkedin.com/in/dilvonei-alves-lacerda-05328a228/"
-    return f"{name}\n{email}\n{linkedin}\n"
-
-@app.get("/geral")
-def geral():
-    rows, headers = general_ads_table()
-    return build_csv_response(rows, headers, "geral.csv")
-
-@app.get("/geral/resumo")
-def geral_resumo():
-    rows, headers = general_summary_table()
-    return build_csv_response(rows, headers, "geral_resumo.csv")
-
-@app.get("/<platform>")
-def plataforma(platform: str):
-    rows, headers = platform_ads_table(platform)
-    return build_csv_response(rows, headers, f"{platform}.csv")
-
-@app.get("/<platform>/resumo")
-def plataforma_resumo(platform: str):
-    rows, headers = platform_summary_table(platform)
-    return build_csv_response(rows, headers, f"{platform}_resumo.csv")
-
-if __name__ == "__main__":
-    print("URL MAP:", app.url_map)
-    app.run(host="0.0.0.0", port=5000, debug=False)
+#CSV 
+def build_csv_response(rows: List[Dict[str, Any]], headers: List[str], filename: str) -> Response:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({h: r.get(h, "") for h in headers})
+    csv_text = buf.getvalue()
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'}
+    )

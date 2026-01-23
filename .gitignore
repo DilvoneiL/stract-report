@@ -3,8 +3,13 @@
 .venv/lib/python3.10/site-packages/werkzeug/wsgi.py
 .venv/lib/python3.10/site-packages/werkzeug/wrappers/__init__.py
 .venv/lib/python3.10/site-packages/werkzeug/wrappers/__pycache__/__init__.cpython-310.pyc
-.env
 .venv/bin/activate
 .venv/bin/activate.csh
 .venv/bin/activate.fish
 /.venv
+app/__pycache__/services.cpython-310.pyc
+app/__pycache__/routes.cpython-310.pyc
+app/__pycache__/http_client.cpython-310.pyc
+app/__pycache__/config.cpython-310.pyc
+app/__pycache__/__init__.cpython-310.pyc
+__pycache__/wsgi.cpython-310.pyc
