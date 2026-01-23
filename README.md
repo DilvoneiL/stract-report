@@ -22,7 +22,7 @@ pip install -r requirements.txt
 
 
 ```bash
-export AUTH_TOKEN="SelecaoStract2026"
+export AUTH_TOKEN="coloque seu token aqui"
 export API_BASE="https://sidebar.stract.to/api"
 ```
 
